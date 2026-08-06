@@ -8,7 +8,7 @@
 /+  default-agent, dbug, verb
 |%
 +$  card  card:agent:gall
-+$  current-state  state-0:b
++$  current-state  state:b
 --
 =|  current-state
 =*  state  -
@@ -75,9 +75,12 @@
 ++  load
   |=  old=vase
   ^+  cor
-  =+  !<(loaded=state-0:b old)
-  ?>  =(%0 -.loaded)
-  =.  state  loaded
+  =+  !<(loaded=versioned-state:b old)
+  =.  state
+    ?-  -.loaded
+      %0  [%1 spaces.loaded next-id.loaded ~ ~]
+      %1  loaded
+    ==
   =?  cor  !(~(has by wex.bowl) [/groups our.bowl %groups])
     (emit [%pass /groups %agent [our.bowl %groups] %watch /v1/groups])
   cor
@@ -99,6 +102,10 @@
     =/  st=bucket-state:b  (need-state flag)
     ?>  (group-can-read group.st flag src.bowl)
     (apply-action act)
+  ::
+      %buckets-broker-command-1
+    ?>  =(src.bowl our.bowl)
+    (apply-broker-command !<(broker-command:b vase))
   ::
       %group-channel-join
     ?>  =(src.bowl our.bowl)
@@ -144,6 +151,8 @@
     %begin-upload    flag.act
     %finish-upload   flag.act
     %fail-upload     flag.act
+    %issue-read      flag.act
+    %issue-delete    flag.act
     %rename-entry    flag.act
     %move-entry      flag.act
     %delete-entry    flag.act
@@ -198,9 +207,11 @@
     %create          ~|(%cannot-forward-create !!)
     %delete-bucket   (delete-bucket flag.act)
     %create-folder   (create-folder flag.act parent.act name.act)
-    %begin-upload    (begin-upload flag.act parent.act name.act mime.act size.act checksum.act)
+    %begin-upload    (begin-upload flag.act parent.act name.act mime.act size.act checksum.act capability.act)
     %finish-upload   (finish-upload flag.act session.act object-url.act)
     %fail-upload     (fail-upload flag.act session.act reason.act)
+    %issue-read      (issue-object-capability %read flag.act id.act capability.act)
+    %issue-delete    (issue-object-capability %delete flag.act id.act capability.act)
     %rename-entry    (rename-entry flag.act id.act name.act)
     %move-entry      (move-entry flag.act id.act parent.act)
     %delete-entry    (delete-entry flag.act id.act recursive.act)
@@ -253,10 +264,14 @@
           mime=@t
           size=@ud
           checksum=(unit @t)
+          capability=@t
       ==
   ^+  cor
   =/  st=bucket-state:b  (need-state flag)
   ?>  (valid-parent st parent)
+  ?>  (gth (met 3 capability) 15)
+  =.  cor  prune-broker-authority
+  ?>  !(~(has by broker-capabilities) capability)
   =/  id=@ud  +(next-id)
   =.  next-id  id
   =/  sid=@uv  `@uv`eny.bowl
@@ -266,8 +281,12 @@
     [id parent name src.bowl now.bowl src.bowl now.bowl [%file fil]]
   =/  ses=upload-session:b
     [sid id src.bowl now.bowl (add now.bowl ~h1) %pending ~]
+  =/  aut=broker-capability:b
+    [%upload flag `sid id object-key.fil src.bowl expires-at.ses ~]
   =.  entries.st   (~(put by entries.st) id ent)
   =.  sessions.st  (~(put by sessions.st) sid ses)
+  =.  broker-capabilities
+    (~(put by broker-capabilities) capability aut)
   (commit-update flag st [%upload-begun ses ent])
 ::
 ++  finish-upload
@@ -301,6 +320,113 @@
   =.  entries.st   (~(put by entries.st) id.ent ent)
   =.  sessions.st  (~(put by sessions.st) sid ses)
   (commit-update flag st [%upload-failed ses ent])
+::
+++  issue-object-capability
+  |=  [kind=broker-kind:b =flag:b id=@ud capability=@t]
+  ^+  cor
+  ?>  !=(%upload kind)
+  ?>  (gth (met 3 capability) 15)
+  =.  cor  prune-broker-authority
+  ?>  !(~(has by broker-capabilities) capability)
+  =/  st=bucket-state:b  (need-state flag)
+  =/  ent=entry:b  (~(got by entries.st) id)
+  =/  fil=file:b  (entry-file ent)
+  ?>  =(%ready status.fil)
+  =/  aut=broker-capability:b
+    [kind flag ~ id object-key.fil src.bowl (add now.bowl ~m10) ~]
+  =.  broker-capabilities
+    (~(put by broker-capabilities) capability aut)
+  cor
+::
+++  prune-broker-authority
+  ^+  cor
+  =/  kept=(map @t broker-capability:b)
+    %-  malt
+    %+  skim  ~(tap by broker-capabilities)
+    |=  [capability=@t aut=broker-capability:b]
+    (gth expires-at.aut now.bowl)
+  =.  broker-capabilities  kept
+  =.  broker-reservations
+    %-  malt
+    %+  skim  ~(tap by broker-reservations)
+    |=  [reservation=@t capability=@t]
+    (~(has by kept) capability)
+  cor
+::
+++  apply-broker-command
+  |=  cmd=broker-command:b
+  ^+  cor
+  ?-  -.cmd
+      %authorize-upload
+    (authorize-broker-upload capability.cmd broker-reservation-id.cmd)
+  ::
+      %complete-upload
+    (complete-broker-upload broker-receipt.cmd)
+  ==
+::
+++  authorize-broker-upload
+  |=  [capability=@t reservation=@t]
+  ^+  cor
+  ?~  got=(~(get by broker-capabilities) capability)  cor
+  =/  aut=broker-capability:b  u.got
+  ?.  =(%upload broker-kind.aut)  cor
+  ?.  (gth expires-at.aut now.bowl)  cor
+  ?~  sid=session.aut  cor
+  =/  st=bucket-state:b  (need-state flag.aut)
+  ?~  ses=(~(get by sessions.st) u.sid)  cor
+  ?.  =(%pending status.u.ses)  cor
+  ?.  (group-can-read group.st flag.aut actor.aut)  cor
+  ?~  accepted=broker-reservation-id.aut
+    ?^  occupied=(~(get by broker-reservations) reservation)  cor
+    =/  updated=broker-capability:b
+      :*  %upload
+          flag.aut
+          session.aut
+          entry-id.aut
+          object-id.aut
+          actor.aut
+          expires-at.aut
+          [~ reservation]
+      ==
+    =.  broker-capabilities
+      (~(put by broker-capabilities) capability updated)
+    =.  broker-reservations
+      (~(put by broker-reservations) reservation capability)
+    cor
+  ?:  =(u.accepted reservation)  cor
+  cor
+::
+++  complete-broker-upload
+  |=  receipt=broker-receipt:b
+  ^+  cor
+  ?~  cap=(~(get by broker-reservations) broker-reservation-id.receipt)  cor
+  ?~  got=(~(get by broker-capabilities) u.cap)  cor
+  =/  aut=broker-capability:b  u.got
+  ?.  =(%upload broker-kind.aut)  cor
+  ?~  sid=session.aut  cor
+  =/  st=bucket-state:b  (need-state flag.aut)
+  ?~  ses-unit=(~(get by sessions.st) u.sid)  cor
+  =/  ses=upload-session:b  u.ses-unit
+  ?:  =(%complete status.ses)  cor
+  ?.  =(%pending status.ses)  cor
+  =/  ent=entry:b  (~(got by entries.st) entry-id.aut)
+  =/  fil=file:b  (entry-file ent)
+  ?.  ?&  =(object-id.receipt object-id.aut)
+          ?|  =(host.receipt (ship-text our.bowl))
+              =(host.receipt (scot %p our.bowl))
+          ==
+          =(bucket-id.receipt (scot %ud id.bucket.st))
+          =(size.receipt size.fil)
+          =(mime-type.receipt mime.fil)
+      ==
+    cor
+  =.  fil  fil(object-url ~, status %ready)
+  =.  ent
+    ent(updated-by actor.aut, updated-at now.bowl, kind [%file fil])
+  =.  ses  ses(status %complete)
+  =.  entries.st   (~(put by entries.st) id.ent ent)
+  =.  sessions.st  (~(put by sessions.st) id.ses ses)
+  (commit-update flag.aut st [%upload-ready ses ent])
 ::
 ++  rename-entry
   |=  [=flag:b id=@ud name=@t]
@@ -406,6 +532,110 @@
   =/  test=$-([ship nest:b] ?)  .^($-([ship nest:b] ?) %gx pax)
   (test who [%buckets ship.flag name.flag])
 ::
+++  ship-text
+  |=  who=ship
+  ^-  @t
+  (crip (slag 1 (trip (scot %p who))))
+::
+++  broker-simple-verdict
+  |=  result=@t
+  ^-  json
+  (pairs:enjs:format ~[['result' s+result]])
+::
+++  broker-upload-verdict
+  |=  [capability=@t reservation=@t]
+  ^-  json
+  =/  denied=json  (broker-simple-verdict 'denied')
+  ?~  got=(~(get by broker-capabilities) capability)  denied
+  =/  aut=broker-capability:b  u.got
+  ?.  =(%upload broker-kind.aut)  denied
+  ?.  (gth expires-at.aut now.bowl)
+    (broker-simple-verdict 'expired')
+  ?~  accepted=broker-reservation-id.aut  denied
+  ?.  =(u.accepted reservation)  denied
+  ?~  sid=session.aut  denied
+  ?~  sp=(~(get by spaces) flag.aut)  denied
+  ?~  st-unit=state.u.sp  denied
+  =/  st=bucket-state:b  u.st-unit
+  ?~  ses=(~(get by sessions.st) u.sid)  denied
+  ?.  =(%pending status.u.ses)  denied
+  ?.  (group-can-read group.st flag.aut actor.aut)  denied
+  =/  ent=entry:b  (~(got by entries.st) entry-id.aut)
+  =/  fil=file:b  (entry-file ent)
+  =/  checksum-json=json
+    ?~  checksum.fil  ~
+    %-  pairs:enjs:format
+    :~  ['algorithm' s+'crc32c']
+        ['value' s+u.checksum.fil]
+    ==
+  =/  upload=json
+    %-  pairs:enjs:format
+    :~  ['bucketName' s+(scot %tas name.flag.aut)]
+        ['bucketId' s+(scot %ud id.bucket.st)]
+        ['sessionId' s+(scot %uv u.sid)]
+        ['objectId' s+object-id.aut]
+        ['actorShip' s+(ship-text actor.aut)]
+        ['size' (numb:enjs:format size.fil)]
+        ['mimeType' s+mime.fil]
+        ['checksum' checksum-json]
+        ['expiresAtMillis' (numb:enjs:format (mul 1.000 (unt:chrono:userlib expires-at.aut)))]
+        ['brokerReservationId' s+u.accepted]
+    ==
+  %-  pairs:enjs:format
+  :~  ['result' s+'authorized']
+      ['upload' upload]
+  ==
+::
+++  broker-object-verdict
+  |=  [kind=broker-kind:b capability=@t object=@t]
+  ^-  json
+  =/  denied=json  (broker-simple-verdict 'denied')
+  ?~  got=(~(get by broker-capabilities) capability)  denied
+  =/  aut=broker-capability:b  u.got
+  ?.  =(kind broker-kind.aut)  denied
+  ?.  =(object object-id.aut)  denied
+  ?.  (gth expires-at.aut now.bowl)
+    (broker-simple-verdict 'expired')
+  ?~  sp=(~(get by spaces) flag.aut)  denied
+  ?~  st-unit=state.u.sp  denied
+  =/  st=bucket-state:b  u.st-unit
+  ?.  (group-can-read group.st flag.aut actor.aut)  denied
+  ?~  ent-unit=(~(get by entries.st) entry-id.aut)  denied
+  =/  ent=entry:b  u.ent-unit
+  ?.  ?=(%file -.kind.ent)  denied
+  =/  fil=file:b  +.kind.ent
+  ?.  =(%ready status.fil)  denied
+  =/  payload=json
+    ?:  =(kind %read)
+      %-  pairs:enjs:format
+      :~  ['bucketId' s+(scot %ud id.bucket.st)]
+          ['objectId' s+object-id.aut]
+          ['displayFilename' s+name.ent]
+      ==
+    %-  pairs:enjs:format
+    :~  ['bucketId' s+(scot %ud id.bucket.st)]
+        ['objectId' s+object-id.aut]
+    ==
+  =/  key=@t  ?:(=(kind %read) 'read' 'delete')
+  %-  pairs:enjs:format
+  :~  ['result' s+'authorized']
+      [key payload]
+  ==
+::
+++  broker-complete-verdict
+  |=  reservation=@t
+  ^-  json
+  =/  denied=json  (broker-simple-verdict 'denied')
+  ?~  cap=(~(get by broker-reservations) reservation)  denied
+  ?~  got=(~(get by broker-capabilities) u.cap)  denied
+  =/  aut=broker-capability:b  u.got
+  ?~  sid=session.aut  denied
+  ?~  sp=(~(get by spaces) flag.aut)  denied
+  ?~  st-unit=state.u.sp  denied
+  ?~  ses=(~(get by sessions.u.st-unit) u.sid)  denied
+  ?.  =(%complete status.u.ses)  denied
+  (broker-simple-verdict 'completed')
+::
 ++  updates-path
   |=  =flag:b
   ^-  path
@@ -479,6 +709,18 @@
     ?~  sp=(~(get by spaces) flag)  ~
     ?~  state.u.sp  ~
     ``buckets-response-1+!>(`response:b`[%snapshot flag u.state.u.sp])
+  ::
+      [%x %v1 %broker %upload cap=@ reservation=@ ~]
+    ``json+!>((broker-upload-verdict cap.pole reservation.pole))
+  ::
+      [%x %v1 %broker %read cap=@ object=@ ~]
+    ``json+!>((broker-object-verdict %read cap.pole object.pole))
+  ::
+      [%x %v1 %broker %delete cap=@ object=@ ~]
+    ``json+!>((broker-object-verdict %delete cap.pole object.pole))
+  ::
+      [%x %v1 %broker %complete reservation=@ ~]
+    ``json+!>((broker-complete-verdict reservation.pole))
   ::
       [%u %joined host=@ name=@ ~]
     =/  =flag:b  [(slav %p host.pole) `@tas`name.pole]

@@ -233,6 +233,7 @@
           (so (get 'mime' jon))
           (ni (get 'size' jon))
           (maybe 'checksum' jon so)
+          (so (get 'capability' jon))
       ==
     ::
         %'finish-upload'
@@ -247,6 +248,20 @@
           (flag (get 'flag' jon))
           ((se %uv) (get 'sessionId' jon))
           (so (get 'reason' jon))
+      ==
+    ::
+        %'issue-read'
+      :*  %issue-read
+          (flag (get 'flag' jon))
+          (ni (get 'id' jon))
+          (so (get 'capability' jon))
+      ==
+    ::
+        %'issue-delete'
+      :*  %issue-delete
+          (flag (get 'flag' jon))
+          (ni (get 'id' jon))
+          (so (get 'capability' jon))
       ==
     ::
         %'rename-entry'

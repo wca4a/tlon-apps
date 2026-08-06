@@ -3,6 +3,7 @@
 /-  bu=buckets
 /+  *test-agent
 /=  buckets-agent  /app/buckets
+/=  buckets-json  /lib/buckets/json
 |%
 ++  dap  %buckets
 ::
@@ -39,7 +40,7 @@
   ==
 ::
 ++  state-for
-  |=  [st=state-0:bu =flag:bu]
+  |=  [st=state-1:bu =flag:bu]
   ^-  bucket-state:bu
   =/  sp=space:bu  (~(got by spaces.st) flag)
   (need state.sp)
@@ -63,16 +64,16 @@
   ;<  *  b
     (do-poke %buckets-action-1 !>(`action:bu`[%create-folder flag ~ 'Launch']))
   ;<  *  b
-    (do-poke %buckets-action-1 !>(`action:bu`[%begin-upload flag `2 'meadow.png' 'image/png' 2.048 ~]))
+    (do-poke %buckets-action-1 !>(`action:bu`[%begin-upload flag `2 'meadow.png' 'image/png' 2.048 ~ 'legacy-capability-0000000000000000']))
   ;<  sv=vase  b  get-save
-  =/  st=state-0:bu  !<(state-0:bu sv)
+  =/  st=state-1:bu  !<(state-1:bu sv)
   =/  bs=bucket-state:bu  (state-for st flag)
   =/  session-list=(list upload-session:bu)  ~(val by sessions.bs)
   =/  ses=upload-session:bu  ?~(session-list !! i.session-list)
   ;<  *  b
     (do-poke %buckets-action-1 !>(`action:bu`[%finish-upload flag id.ses 'https://objects.test/meadow.png']))
   ;<  sv2=vase  b  get-save
-  =/  st2=state-0:bu  !<(state-0:bu sv2)
+  =/  st2=state-1:bu  !<(state-1:bu sv2)
   =/  bs2=bucket-state:bu  (state-for st2 flag)
   =/  ent=entry:bu  (~(got by entries.bs2) 3)
   =/  fil=file:bu  (file-of ent)
@@ -80,6 +81,137 @@
   =/  expected-url=(unit @t)  (some 'https://objects.test/meadow.png')
   =/  expected-parent=(unit @ud)  (some 2)
   (ex-equal !>([revision.bs2 status.fil status.ses2 object-url.fil parent.ent]) !>([3 %ready %complete expected-url expected-parent]))
+::
+::  The Pioneer bridge binds Memex's proposed reservation exactly once and
+::  only marks the file ready after a matching verified receipt callback.
+::
+++  test-broker-upload-lifecycle
+  %-  eval-mare
+  =/  m  (mare ,~)
+  =*  b  bind:m
+  ^-  form:m
+  =/  cap=@t  'broker-capability-00000000000000000000'
+  =/  rid=@t  '00000000-0000-0000-0000-000000000001'
+  ;<  ~  b  setup
+  ;<  ~  b  create
+  ;<  *  b
+    (do-poke %buckets-action-1 !>(`action:bu`[%begin-upload flag ~ 'private.pdf' 'application/pdf' 42 ~ cap]))
+  ;<  *  b
+    (do-poke %buckets-broker-command-1 !>(`broker-command:bu`[%authorize-upload cap rid]))
+  ;<  upload-cage=cage  b
+    (got-peek /x/v1/broker/upload/[cap]/[rid])
+  =/  upload-json=json  !<(json q.upload-cage)
+  =/  upload-result=@t
+    (so:dejs:format (get:dejs:buckets-json 'result' upload-json))
+  ;<  sv=vase  b  get-save
+  =/  st=state-1:bu  !<(state-1:bu sv)
+  =/  aut=broker-capability:bu  (~(got by broker-capabilities.st) cap)
+  =/  bs=bucket-state:bu  (state-for st flag)
+  =/  session-list=(list upload-session:bu)  ~(val by sessions.bs)
+  =/  ses=upload-session:bu  ?~(session-list !! i.session-list)
+  =/  ent=entry:bu  (~(got by entries.bs) file-id.ses)
+  =/  fil=file:bu  (file-of ent)
+  ;<  ~  b
+    (ex-equal !>(broker-reservation-id.aut) !>(`rid))
+  =/  receipt=broker-receipt:bu
+    [rid object-key.fil 'zod' (scot %ud id.bucket.bs) 42 'application/pdf']
+  ;<  *  b
+    (do-poke %buckets-broker-command-1 !>(`broker-command:bu`[%complete-upload receipt]))
+  ::  Completion retries are idempotent.
+  ;<  *  b
+    (do-poke %buckets-broker-command-1 !>(`broker-command:bu`[%complete-upload receipt]))
+  ;<  sv2=vase  b  get-save
+  =/  st2=state-1:bu  !<(state-1:bu sv2)
+  =/  bs2=bucket-state:bu  (state-for st2 flag)
+  =/  ent2=entry:bu  (~(got by entries.bs2) file-id.ses)
+  =/  fil2=file:bu  (file-of ent2)
+  =/  ses2=upload-session:bu  (~(got by sessions.bs2) id.ses)
+  =/  read-cap=@t  'read-capability-0000000000000000000000'
+  =/  delete-cap=@t  'delete-capability-00000000000000000000'
+  ;<  *  b
+    (do-poke %buckets-action-1 !>(`action:bu`[%issue-read flag file-id.ses read-cap]))
+  ;<  *  b
+    (do-poke %buckets-action-1 !>(`action:bu`[%issue-delete flag file-id.ses delete-cap]))
+  ;<  read-cage=cage  b
+    (got-peek /x/v1/broker/read/[read-cap]/[object-key.fil2])
+  ;<  delete-cage=cage  b
+    (got-peek /x/v1/broker/delete/[delete-cap]/[object-key.fil2])
+  ;<  denied-cage=cage  b
+    (got-peek /x/v1/broker/read/[read-cap]/wrong-object)
+  =/  read-json=json  !<(json q.read-cage)
+  =/  delete-json=json  !<(json q.delete-cage)
+  =/  denied-json=json  !<(json q.denied-cage)
+  =/  read-payload=json
+    (get:dejs:buckets-json 'read' read-json)
+  =/  delete-payload=json
+    (get:dejs:buckets-json 'delete' delete-json)
+  ?>  ?=([%o *] delete-payload)
+  =/  delete-filename=(unit json)
+    (~(get by p.delete-payload) 'displayFilename')
+  =/  read-result=@t
+    (so:dejs:format (get:dejs:buckets-json 'result' read-json))
+  =/  read-object=@t
+    (so:dejs:format (get:dejs:buckets-json 'objectId' read-payload))
+  =/  read-name=@t
+    (so:dejs:format (get:dejs:buckets-json 'displayFilename' read-payload))
+  =/  delete-result=@t
+    (so:dejs:format (get:dejs:buckets-json 'result' delete-json))
+  =/  delete-object=@t
+    (so:dejs:format (get:dejs:buckets-json 'objectId' delete-payload))
+  =/  denied-result=@t
+    (so:dejs:format (get:dejs:buckets-json 'result' denied-json))
+  =/  next-read-cap=@t  'next-read-capability-000000000000000000'
+  ;<  ~  b
+    (jab-bowl |=(bol=bowl bol(now ~2026.1.1..02.00.00)))
+  ;<  *  b
+    (do-poke %buckets-action-1 !>(`action:bu`[%issue-read flag file-id.ses next-read-cap]))
+  ;<  sv3=vase  b  get-save
+  =/  st3=state-1:bu  !<(state-1:bu sv3)
+  =/  old-upload-pruned=?
+    !(~(has by broker-capabilities.st3) cap)
+  =/  old-read-pruned=?
+    !(~(has by broker-capabilities.st3) read-cap)
+  =/  old-delete-pruned=?
+    !(~(has by broker-capabilities.st3) delete-cap)
+  =/  old-reservation-pruned=?
+    !(~(has by broker-reservations.st3) rid)
+  =/  next-read-kept=?
+    (~(has by broker-capabilities.st3) next-read-cap)
+  %+  ex-equal
+  !>  :*  upload-result
+          status.fil2
+          object-url.fil2
+          status.ses2
+          read-result
+          read-object
+          read-name
+          delete-result
+          delete-object
+          delete-filename
+          denied-result
+          old-upload-pruned
+          old-read-pruned
+          old-delete-pruned
+          old-reservation-pruned
+          next-read-kept
+      ==
+  !>  :*  'authorized'
+          %ready
+          ~
+          %complete
+          'authorized'
+          object-key.fil2
+          'private.pdf'
+          'authorized'
+          object-key.fil2
+          ~
+          'denied'
+          &
+          &
+          &
+          &
+          &
+      ==
 ::
 ::  Folder parents must exist and must themselves be folders.
 ::

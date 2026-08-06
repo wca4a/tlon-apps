@@ -103,9 +103,11 @@
   $%  [%create name=@tas title=@t group=flag readers=(set @tas)]
       [%delete-bucket =flag]
       [%create-folder =flag parent=(unit @ud) name=@t]
-      [%begin-upload =flag parent=(unit @ud) name=@t mime=@t size=@ud checksum=(unit @t)]
+      [%begin-upload =flag parent=(unit @ud) name=@t mime=@t size=@ud checksum=(unit @t) capability=@t]
       [%finish-upload =flag session=@uv object-url=@t]
       [%fail-upload =flag session=@uv reason=@t]
+      [%issue-read =flag id=@ud capability=@t]
+      [%issue-delete =flag id=@ud capability=@t]
       [%rename-entry =flag id=@ud name=@t]
       [%move-entry =flag id=@ud parent=(unit @ud)]
       [%delete-entry =flag id=@ud recursive=?]
@@ -115,6 +117,34 @@
 ::  claimed principal appears in the payload.
 ::
 +$  command  [=action]
+
+::  Opaque, short-lived bearer capabilities exchanged by Memex through
+::  Pioneer's local spider threads. They are host-only authority state and
+::  are never included in Bucket snapshots or Ames updates.
+::
++$  broker-kind  ?(%upload %read %delete)
++$  broker-capability
+  $:  =broker-kind
+      =flag
+      session=(unit @uv)
+      entry-id=@ud
+      object-id=@t
+      actor=ship
+      expires-at=@da
+      broker-reservation-id=(unit @t)
+  ==
++$  broker-receipt
+  $:  broker-reservation-id=@t
+      object-id=@t
+      host=@t
+      bucket-id=@t
+      size=@ud
+      mime-type=@t
+  ==
++$  broker-command
+  $%  [%authorize-upload capability=@t broker-reservation-id=@t]
+      [%complete-upload =broker-receipt]
+  ==
 ::
 +$  update
   $%  [%bucket-created =bucket]
@@ -143,5 +173,13 @@
       spaces=(map flag space)
       next-id=@ud
   ==
-+$  state  state-0
++$  state-1
+  $:  %1
+      spaces=(map flag space)
+      next-id=@ud
+      broker-capabilities=(map @t broker-capability)
+      broker-reservations=(map @t @t)
+  ==
++$  versioned-state  $%(state-0 state-1)
++$  state  state-1
 --
