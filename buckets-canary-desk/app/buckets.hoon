@@ -70,7 +70,9 @@
   ^+  cor
   (emit [%pass /groups %agent [our.bowl %groups] %watch /v1/groups])
 ::
-::  Greenfield version 0. Future state versions must migrate explicitly here.
+::  Persisted state migrations are explicit. Version 2 separates the writer
+::  role-set from the group's reader roles; existing Buckets preserve their
+::  previous behavior by initially granting those reader roles write access.
 ::
 ++  load
   |=  old=vase
@@ -78,12 +80,25 @@
   =+  !<(loaded=versioned-state:b old)
   =.  state
     ?-  -.loaded
-      %0  [%1 spaces.loaded next-id.loaded ~ ~]
-      %1  loaded
+      %0  [%2 (migrate-spaces spaces.loaded) next-id.loaded ~ ~]
+      %1  [%2 (migrate-spaces spaces.loaded) next-id.loaded broker-capabilities.loaded broker-reservations.loaded]
+      %2  loaded
     ==
   =?  cor  !(~(has by wex.bowl) [/groups our.bowl %groups])
     (emit [%pass /groups %agent [our.bowl %groups] %watch /v1/groups])
   cor
+::
+++  migrate-spaces
+  |=  old=(map flag:b space-1:b)
+  ^-  (map flag:b space:b)
+  %-  malt
+  %+  turn  ~(tap by old)
+  |=  [=flag:b old-space=space-1:b]
+  =/  new-state=(unit bucket-state:b)
+    ?~  state.old-space  ~
+    =/  old-state=bucket-state-1:b  u.state.old-space
+    `[bucket.old-state group.old-state readers.old-state readers.old-state entries.old-state sessions.old-state revision.old-state]
+  [flag net.old-space new-state pending-group.old-space]
 ::
 ++  poke
   |=  [=mark =vase]
@@ -100,7 +115,7 @@
     =/  =flag:b  (action-flag act)
     ?>  =(ship.flag our.bowl)
     =/  st=bucket-state:b  (need-state flag)
-    ?>  (group-can-read group.st flag src.bowl)
+    ?>  (action-authorized st flag src.bowl act)
     (apply-action act)
   ::
       %buckets-broker-command-1
@@ -129,7 +144,7 @@
   ^+  cor
   ?+  -.act  (dispatch-existing act)
     %create
-  (create-bucket name.act title.act group.act readers.act)
+  (create-bucket name.act title.act group.act readers.act writers.act)
   ==
 ::
 ++  dispatch-existing
@@ -147,6 +162,8 @@
   ?-  -.act
     %create          ~|(%create-has-no-flag !!)
     %delete-bucket   flag.act
+    %set-title       flag.act
+    %set-writers     flag.act
     %create-folder   flag.act
     %begin-upload    flag.act
     %finish-upload   flag.act
@@ -178,7 +195,7 @@
   cor
 ::
 ++  create-bucket
-  |=  [name=@tas title=@t group=flag:b readers=(set @tas)]
+  |=  [name=@tas title=@t group=flag:b readers=(set @tas) writers=(set @tas)]
   ^+  cor
   ?>  =(ship.group our.bowl)
   =/  =flag:b  [our.bowl name]
@@ -186,7 +203,7 @@
   =/  id=@ud  +(next-id)
   =.  next-id  id
   =/  buc=bucket:b  [id title our.bowl now.bowl our.bowl now.bowl]
-  =/  st=bucket-state:b  [buc group readers ~ ~ 0]
+  =/  st=bucket-state:b  [buc group readers writers ~ ~ 0]
   =.  spaces  (~(put by spaces) flag [%pub `st `group])
   =/  channel=group-channel:b
     [[title '' '' ''] now.bowl %default readers |]
@@ -206,6 +223,8 @@
   ?-  -.act
     %create          ~|(%cannot-forward-create !!)
     %delete-bucket   (delete-bucket flag.act)
+    %set-title       (set-title flag.act title.act)
+    %set-writers     (set-writers flag.act writers.act)
     %create-folder   (create-folder flag.act parent.act name.act)
     %begin-upload    (begin-upload flag.act parent.act name.act mime.act size.act checksum.act capability.act)
     %finish-upload   (finish-upload flag.act session.act object-url.act)
@@ -229,7 +248,6 @@
 ++  delete-bucket
   |=  =flag:b
   ^+  cor
-  ?>  =(src.bowl our.bowl)
   =/  st=bucket-state:b  (need-state flag)
   =/  del=group-channel-del:b
     [%group group.st %channel [%buckets flag] %del ~]
@@ -244,6 +262,21 @@
   =.  cor  (give [%fact ~[/v1 (updates-path flag)] buckets-response-1+!>(res)])
   =.  spaces  (~(del by spaces) flag)
   cor
+::
+++  set-title
+  |=  [=flag:b title=@t]
+  ^+  cor
+  =/  st=bucket-state:b  (need-state flag)
+  =.  bucket.st
+    bucket.st(title title, updated-by src.bowl, updated-at now.bowl)
+  (commit-update flag st [%bucket-updated bucket.st])
+::
+++  set-writers
+  |=  [=flag:b writers=(set @tas)]
+  ^+  cor
+  =/  st=bucket-state:b  (need-state flag)
+  =.  writers.st  writers
+  (commit-update flag st [%writers-updated writers])
 ::
 ++  create-folder
   |=  [=flag:b parent=(unit @ud) name=@t]
@@ -375,7 +408,7 @@
   =/  st=bucket-state:b  (need-state flag.aut)
   ?~  ses=(~(get by sessions.st) u.sid)  cor
   ?.  =(%pending status.u.ses)  cor
-  ?.  (group-can-read group.st flag.aut actor.aut)  cor
+  ?.  (group-can-write group.st flag.aut writers.st actor.aut)  cor
   ?~  accepted=broker-reservation-id.aut
     ?^  occupied=(~(get by broker-reservations) reservation)  cor
     =/  updated=broker-capability:b
@@ -405,6 +438,7 @@
   ?.  =(%upload broker-kind.aut)  cor
   ?~  sid=session.aut  cor
   =/  st=bucket-state:b  (need-state flag.aut)
+  ?.  (group-can-write group.st flag.aut writers.st actor.aut)  cor
   ?~  ses-unit=(~(get by sessions.st) u.sid)  cor
   =/  ses=upload-session:b  u.ses-unit
   ?:  =(%complete status.ses)  cor
@@ -532,6 +566,51 @@
   =/  test=$-([ship nest:b] ?)  .^($-([ship nest:b] ?) %gx pax)
   (test who [%buckets ship.flag name.flag])
 ::
+++  group-permissions
+  |=  [group=flag:b =flag:b who=ship]
+  ^-  [admin=? roles=(set @tas)]
+  ?:  =(who ship.flag)  [& ~]
+  =/  pax=path
+    /(scot %p our.bowl)/groups/(scot %da now.bowl)/v2/groups/(scot %p ship.group)/[name.group]/channels/buckets/(scot %p ship.flag)/[name.flag]/can-write/(scot %p who)/noun
+  .^([admin=? roles=(set @tas)] %gx pax)
+::
+++  group-is-admin
+  |=  [group=flag:b =flag:b who=ship]
+  ^-  ?
+  =/  permissions=[admin=? roles=(set @tas)]
+    (group-permissions group flag who)
+  admin.permissions
+::
+++  group-can-write
+  |=  [group=flag:b =flag:b writers=(set @tas) who=ship]
+  ^-  ?
+  ?.  (group-can-read group flag who)  |
+  =/  permissions=[admin=? roles=(set @tas)]
+    (group-permissions group flag who)
+  ?|  admin.permissions
+      =(~ writers)
+      !=(~ (~(int in writers) roles.permissions))
+  ==
+::
+++  action-authorized
+  |=  [st=bucket-state:b =flag:b who=ship act=action:b]
+  ^-  ?
+  ?-  -.act
+    %create          |
+    %delete-bucket   (group-is-admin group.st flag who)
+    %set-title       (group-is-admin group.st flag who)
+    %set-writers     (group-is-admin group.st flag who)
+    %issue-read      (group-can-read group.st flag who)
+    %create-folder   (group-can-write group.st flag writers.st who)
+    %begin-upload    (group-can-write group.st flag writers.st who)
+    %finish-upload   (group-can-write group.st flag writers.st who)
+    %fail-upload     (group-can-write group.st flag writers.st who)
+    %issue-delete    (group-can-write group.st flag writers.st who)
+    %rename-entry    (group-can-write group.st flag writers.st who)
+    %move-entry      (group-can-write group.st flag writers.st who)
+    %delete-entry    (group-can-write group.st flag writers.st who)
+  ==
+::
 ++  ship-text
   |=  who=ship
   ^-  @t
@@ -559,7 +638,7 @@
   =/  st=bucket-state:b  u.st-unit
   ?~  ses=(~(get by sessions.st) u.sid)  denied
   ?.  =(%pending status.u.ses)  denied
-  ?.  (group-can-read group.st flag.aut actor.aut)  denied
+  ?.  (group-can-write group.st flag.aut writers.st actor.aut)  denied
   =/  ent=entry:b  (~(got by entries.st) entry-id.aut)
   =/  fil=file:b  (entry-file ent)
   =/  checksum-json=json
@@ -599,7 +678,10 @@
   ?~  sp=(~(get by spaces) flag.aut)  denied
   ?~  st-unit=state.u.sp  denied
   =/  st=bucket-state:b  u.st-unit
-  ?.  (group-can-read group.st flag.aut actor.aut)  denied
+  ?.  ?:  =(%read kind)
+        (group-can-read group.st flag.aut actor.aut)
+      (group-can-write group.st flag.aut writers.st actor.aut)
+    denied
   ?~  ent-unit=(~(get by entries.st) entry-id.aut)  denied
   =/  ent=entry:b  u.ent-unit
   ?.  ?=(%file -.kind.ent)  denied
@@ -822,6 +904,12 @@
     st(bucket bucket.upd)
   ::
       %bucket-deleted  st
+  ::
+      %bucket-updated
+    st(bucket bucket.upd)
+  ::
+      %writers-updated
+    st(writers writers.upd)
   ::
       %folder-created
     st(entries (~(put by entries.st) id.entry.upd entry.upd))
